@@ -1,0 +1,195 @@
+<?php
+// $Id: watchdog_live.module,v 1.7 2009/12/08 21:32:49 naxoc Exp $
+/**
+ *  @file
+ *  Adds auto update functionality to the watchdog table.
+ */
+
+/**
+ * Implementation of hook_menu().
+ */
+function watchdog_live_menu() {
+  $items = array();
+  $items['admin/logs/watchdog/live/callback/%'] = array(
+    'page callback' => 'watchdog_live_callback',
+    'page arguments' => array(5),
+    'access arguments' => array('access site reports'),
+    'type' => MENU_CALLBACK,
+  );
+
+  $items['admin/logs/watchdog/live/settings'] = array(
+    'page callback' => 'watchdog_live_settings',
+    'access arguments' => array('access site reports'),
+    'type' => MENU_CALLBACK,
+  );
+
+  $items['admin/reports/watchdogmini'] = array(
+    'title' => 'Watchdog mini',
+    'description' => 'A popup window with the site log live',
+    'page callback' => 'watchdog_live_popup',
+    'access arguments' => array('access site reports'),
+  );
+
+  return $items;
+}
+
+/**
+ * Implementation of hook_menu_link_alter().
+ */
+function watchdog_live_menu_link_alter(&$item, $menu) {
+  if ('admin/reports/watchdogmini' == $item['link_path']) {
+    // Make the menu link open in a new window
+    $item['options']['attributes']['onclick'] = "var w=window.open(this.href, 'watchdog_live_popup', 'width=820,height=400,scrollbars,resizable'); w.focus(); return false;";
+  }
+}
+
+/**
+ * Implementation of hook_form_alter().
+ */
+function watchdog_live_form_alter(&$form, &$form_state , $form_id) {
+  if ($form_id == 'dblog_filter_form' && empty($_GET['page'])) {
+
+    // Include needed JavaScript.
+    $path = array(
+      'callback_url' => url('admin/logs/watchdog/live/callback/'. (arg(2) == 'watchdogmini' ? 'mini' : 'full')),
+      'setting_url' => url('admin/logs/watchdog/live/settings')
+    );
+
+    drupal_add_js(array('watchdogLive' => $path), 'setting');
+    drupal_add_js(drupal_get_path('module', 'watchdog_live') .'/watchdog_live.js');
+    
+    // Get the seconds
+    $intervals = drupal_map_assoc(array(500, 1000, 2000, 3000, 5000, 10000, 30000), create_function('$a', 'return t("!num seconds", array("!num" => $a/1000));'));
+    // And add the minutes
+    $intervals += drupal_map_assoc(array(60000, 300000), create_function('$a', 'return t("!num minutes", array("!num" => $a/1000/60));'));
+
+    // Add configurable options right on the watchdog page so we can update instantly.. Just for kicks.
+    $form['watchdog_live'] = array('#type' => 'fieldset', '#title' => t('Live settings'), '#tree' => TRUE, '#collapsible' => TRUE, '#collapsed' => (arg(2) == 'watchdogmini' ? TRUE : FALSE));
+
+    if (user_access('administer site configuration')) {
+      $form['watchdog_live']['interval'] = array(
+        '#type' => 'select', '#title' => t('Update interval'),
+        '#options' => $intervals, '#default_value' => variable_get('watchdog_live_interval', 3000)
+      );
+    }
+    $form['watchdog_live']['disabled'] = array(
+      '#type' => 'checkbox', '#title' => t('Disable live updating'),
+      '#default_value' => $_SESSION['watchdog_live_disabled']
+    );
+    if ('watchdogmini' == arg(2)) {
+      unset($form['filters']);
+    }
+  }
+}
+
+/**
+ * Callback used to retrieve the updated table.
+ */
+function watchdog_live_callback($page_name) {
+
+  // Make sure we need to update the table.
+  if (watchdog_live_update_needed($page_name)) {
+
+    require_once drupal_get_path('module', 'dblog') .'/dblog.admin.inc';
+    $output['content'] = preg_replace('#<form.*</form>\s+#s', '', dblog_overview());
+
+    // Fix url
+    $output['content'] = preg_replace('#admin/logs/watchdog/live/callback/'. $page_name .'#', 'admin/reports/dblog', $output['content']);
+  }
+  else {
+    $output['error'] = TRUE;
+  }
+
+  print drupal_to_js($output);
+  exit;
+}
+
+/**
+ * Update the settings.
+ */
+function watchdog_live_settings() {
+  // Handle interval.
+  if (isset($_POST['interval']) && intval($_POST['interval']) && user_access('administer site configuration')) {
+    variable_set('watchdog_live_interval', $_POST['interval']);
+  }
+
+  // Allow users to turn off live updating for a session.
+  if (isset($_POST['disabled'])) {
+    $_SESSION['watchdog_live_disabled'] = $_POST['disabled'];
+  }
+
+  // Give it something.
+  print 1;
+  exit;
+}
+
+/**
+ * @param $page_name
+ *   The page calling to check for updates
+ */
+function watchdog_live_update_needed($page_name) {
+  $session_string = 'watchdog_live_latest_wid_'. $page_name;
+
+  $latest_wid = db_result(db_query_range("SELECT wid FROM {watchdog} ORDER BY wid DESC", 0, 1));
+  if ($_SESSION[$session_string] < $latest_wid) {
+    $_SESSION[$session_string] = $latest_wid;
+    return TRUE;
+  }
+  return FALSE;
+}
+
+function watchdog_live_popup() {
+  require_once drupal_get_path('module', 'dblog') .'/dblog.admin.inc';
+
+  // Suppress admin_menu.
+  module_invoke('admin_menu', 'suppress');
+
+  // Fix url
+  $output = preg_replace('#admin/reports/watchdogmini#', 'admin/reports/dblog', dblog_overview());
+
+  print theme('watchdog_live_popup', $output);
+  return;
+}
+
+/**
+ * Implementation of hook_theme().
+ */
+function watchdog_live_theme() {
+  return array('watchdog_live_popup' => array(
+    'arguments' => array('content' => NULL),
+    'template' => 'watchdog-live-popup',
+    )
+  );
+  return $hooks;
+}
+
+/**
+ * Set some variables for the popup page
+ */
+function template_preprocess_watchdog_live_popup(&$variables) {
+
+  // Add favicon.
+  if (theme_get_setting('toggle_favicon')) {
+    drupal_set_html_head('<link rel="shortcut icon" href="'. check_url(theme_get_setting('favicon')) .'" type="image/x-icon" />');
+  }
+
+  // Construct page title.
+  if (drupal_get_title()) {
+    $head_title[] = strip_tags(drupal_get_title());
+  }
+  $head_title[] = variable_get('site_name', 'Drupal');
+
+  $variables['head_title']        = implode(' | ', $head_title);
+  $variables['base_path']         = base_path();
+  $variables['front_page']        = url();
+  $variables['head']              = drupal_get_html_head();
+  $variables['language']          = $GLOBALS['language'];
+  $variables['language']->dir     = $GLOBALS['language']->direction ? 'rtl' : 'ltr';
+  $variables['messages']          = theme('status_messages');
+
+  $variables['styles']            = drupal_get_css();
+  $variables['scripts']           = drupal_get_js();
+  $variables['title']             = drupal_get_title();
+  // Closure should be filled last.
+  $variables['closure']           = theme('closure');
+}

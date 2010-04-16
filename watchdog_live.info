@@ -1,0 +1,5 @@
+; $Id: watchdog_live.info,v 1.2 2009/04/21 14:17:16 naxoc Exp $
+name = "Watchdog Live"
+description = "Adds auto update functionality to the watchdog table with jQuery."
+core = 6.x
+dependencies[] = dblog
